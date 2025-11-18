@@ -1,15 +1,15 @@
-local core = require('code-typer.core')
+local core = require('speed-motion.core')
 
 -- Define the command to open the window
 vim.api.nvim_create_user_command(
-    'OpenMyPluginWindow',
+    'SpeedMotion',
         core.open,
     { nargs = 0, desc = 'Open the main plugin window' }
 )
 
 -- Define the command to close the window
 vim.api.nvim_create_user_command(
-    'CloseMyPluginWindow',
+    'SlowMotion',
         core.close,
     { nargs = 0, desc = 'Close the main plugin window' }
 )
