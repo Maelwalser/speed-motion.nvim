@@ -27,23 +27,25 @@ local AUGROUP = vim.api.nvim_create_augroup("CodeTyperGame", { clear = true })
 -- Utility function to handle moving to the next line or finishing the game
 local function advance_line_or_finish()
   current_line_idx = current_line_idx + 1 -- Advance line index
-  
+
   if current_line_idx <= #target_lines then
     -- Load the next line as the new target
     target_text = target_lines[current_line_idx]
-    
-    -- Reset input line content (Line 2) and move cursor
-    vim.api.nvim_buf_set_lines(buffer_id, 2, 3, false, { target_text })
-    vim.api.nvim_win_set_cursor(window_id, {3, 0})
-    
-    -- Clear highlights for the new target
-    vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, 2, 3)
+
+    -- Calculate the buffer line for the next snippet line
+    local next_buffer_line = 1 + current_line_idx -- 0-indexed
+
+    -- Move cursor to the next line, column 0
+    vim.api.nvim_win_set_cursor(window_id, {next_buffer_line + 1, 0}) -- Convert to 1-indexed
+
+    -- Clear highlights for the new target line
+    vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, next_buffer_line, next_buffer_line + 1)
 
   else
     -- Full Snippet Completion
     game_status = "FINISHED"
     vim.api.nvim_echo({{"Game Complete! Press q to close.", "Title"}}, true, {})
-    
+
     -- Clean up and disable modifications
     vim.api.nvim_del_augroup_by_name("CodeTyperGame")
     vim.api.nvim_buf_set_option(buffer_id, 'modifiable', false)
@@ -57,12 +59,16 @@ function M.check_input()
 
   local target_len = #target_text
 
+  -- Calculate buffer line index for current snippet line
+  -- Line 0: Status, Line 1: Separator, Line 2+: Snippet lines
+  local current_buffer_line = 1 + current_line_idx -- 0-indexed
+
   -- Get current cursor position - this tells us how many characters the user has typed
   local cursor_pos = vim.api.nvim_win_get_cursor(window_id)
   local cursor_col = cursor_pos[2] -- 0-indexed column position
 
-  -- Get user input from line 2 (which may have inserted characters)
-  local typed_lines = vim.api.nvim_buf_get_lines(buffer_id, 2, 3, false)
+  -- Get user input from the current snippet line
+  local typed_lines = vim.api.nvim_buf_get_lines(buffer_id, current_buffer_line, current_buffer_line + 1, false)
   local current_line_content = typed_lines[1] or ""
 
   -- The cursor position tells us how many characters have been typed
@@ -75,18 +81,16 @@ function M.check_input()
   local new_line_content = typed_text .. remaining_text
 
   -- Update buffer with typed characters + remaining target text
-  vim.api.nvim_buf_set_lines(buffer_id, 2, 3, false, { new_line_content })
+  vim.api.nvim_buf_set_lines(buffer_id, current_buffer_line, current_buffer_line + 1, false, { new_line_content })
 
   -- Move cursor to correct position (after the typed text)
-  vim.api.nvim_win_set_cursor(window_id, {3, typed_len}) -- Line 3 (0-based line 2)
+  vim.api.nvim_win_set_cursor(window_id, {current_buffer_line + 1, typed_len}) -- Convert to 1-indexed
 
-  -- Clear all previous highlights
-  vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, 2, 3)
+  -- Clear highlights on current line
+  vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, current_buffer_line, current_buffer_line + 1)
 
-  -- 2. Update Progress and Apply Extmarks
+  -- Apply highlights to current line being typed
   local has_error = false
-
-  -- Loop over each character in the target text
   for i = 1, target_len do
     local target_char = string.sub(target_text, i, i)
 
@@ -106,26 +110,47 @@ function M.check_input()
       hl_group = HL_REMAINING
     end
 
-    -- Apply the Extmark to the target line (line 2 of the buffer, 0-based index)
+    -- Apply the Extmark to the current line
     vim.api.nvim_buf_set_extmark(
-      buffer_id, EXTMARK_NS, 2, i - 1, -- Line 2, character index (0-based)
+      buffer_id, EXTMARK_NS, current_buffer_line, i - 1,
       { end_col = i, hl_group = hl_group }
     )
   end
 
-  -- 3. Check for Line/Snippet Completion
+  -- Highlight all completed lines (lines before current) as green
+  for idx = 1, current_line_idx - 1 do
+    local line_buffer_idx = 1 + idx -- 0-indexed
+    local line_text = target_lines[idx]
+    vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, line_buffer_idx, line_buffer_idx + 1)
+    for i = 1, #line_text do
+      vim.api.nvim_buf_set_extmark(
+        buffer_id, EXTMARK_NS, line_buffer_idx, i - 1,
+        { end_col = i, hl_group = HL_CORRECT }
+      )
+    end
+  end
+
+  -- Highlight all future lines (lines after current) as gray
+  for idx = current_line_idx + 1, #target_lines do
+    local line_buffer_idx = 1 + idx -- 0-indexed
+    local line_text = target_lines[idx]
+    vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, line_buffer_idx, line_buffer_idx + 1)
+    for i = 1, #line_text do
+      vim.api.nvim_buf_set_extmark(
+        buffer_id, EXTMARK_NS, line_buffer_idx, i - 1,
+        { end_col = i, hl_group = HL_REMAINING }
+      )
+    end
+  end
+
+  -- Check for Line/Snippet Completion
   -- Only advance if all characters are typed AND there are no errors
   if typed_len >= target_len and not has_error then
     -- Line successfully completed. Advance logic.
     advance_line_or_finish()
   end
 
-  -- Update Status Line (now based on character progress, needs refinement for WPM)
-  local total_chars = 0
-  for _, line in ipairs(target_lines) do total_chars = total_chars + #line end
-
-  -- NOTE: Character progress is complex to calculate accurately across lines
-  -- without tracking previous lines. For simplicity, we use Line Progress:
+  -- Update Status Line
   local progress = math.floor(((current_line_idx - 1) / #target_lines) * 100)
   if game_status == "FINISHED" then progress = 100 end
 
@@ -174,17 +199,22 @@ window_id = vim.api.nvim_get_current_win()
 vim.api.nvim_win_set_buf(window_id, buffer_id)
 
 -- 4. Initial content setup:
--- The target lines are placed at line 2. We only place the *current* line (target_text) for typing.
-vim.api.nvim_buf_set_lines(buffer_id, 0, -1, false, {
+-- Create buffer content with all snippet lines
+local buffer_content = {
   "Code Typer - Line Progress: 0% | Errors: No", -- Line 0: Status Line
   "--------------------------------------------------------------------------------", -- Line 1: Separator
-  target_text, -- Line 2: Current Target/User Input Line (Initial content)
-  "Press 'i' to start typing. Use Vim motions in Normal Mode to correct mistakes.", -- Line 3: Instructions
-})
+}
 
--- Make the input line modifiable, and move cursor there
+-- Add all snippet lines to the buffer
+for _, line in ipairs(target_lines) do
+  table.insert(buffer_content, line)
+end
+
+vim.api.nvim_buf_set_lines(buffer_id, 0, -1, false, buffer_content)
+
+-- Make the buffer modifiable, and move cursor to first snippet line
 vim.api.nvim_buf_set_option(buffer_id, 'modifiable', true)
-vim.api.nvim_win_set_cursor(window_id, {3, 0}) -- Cursor on line 3 (0-based index 2), column 0
+vim.api.nvim_win_set_cursor(window_id, {3, 0}) -- Cursor on line 3 (first snippet line), column 0
 
 -- 5. Set up Autocommand for continuous input checking
 vim.api.nvim_create_autocmd("TextChangedI", {
