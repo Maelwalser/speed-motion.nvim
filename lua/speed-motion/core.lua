@@ -26,6 +26,70 @@ vim.cmd('highlight ' .. HL_REMAINING .. ' guifg=#888888') -- Gray
 -- Autocmd Group for cleanup
 local AUGROUP = vim.api.nvim_create_augroup("CodeTyperGame", { clear = true })
 
+--- Helper function to update highlights and virtual text for a specific line
+local function update_line_display(snippet_line_idx, buffer_line_idx, is_current_line)
+  local target_text_for_line = target_lines[snippet_line_idx]
+  local target_len = #target_text_for_line
+
+  -- Get what user has typed from buffer
+  local buffer_lines = vim.api.nvim_buf_get_lines(buffer_id, buffer_line_idx, buffer_line_idx + 1, false)
+  local typed_text = buffer_lines[1] or ""
+  local typed_len = #typed_text
+
+  -- Limit typed length to target length
+  if typed_len > target_len then
+    typed_text = string.sub(typed_text, 1, target_len)
+    typed_len = target_len
+    vim.api.nvim_buf_set_lines(buffer_id, buffer_line_idx, buffer_line_idx + 1, false, { typed_text })
+  end
+
+  -- Clear all extmarks on this line
+  vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, buffer_line_idx, buffer_line_idx + 1)
+
+  -- Apply character-by-character highlights to typed text
+  local has_error = false
+  for i = 1, typed_len do
+    local target_char = string.sub(target_text_for_line, i, i)
+    local typed_char = string.sub(typed_text, i, i)
+
+    local hl_group
+    if target_char == typed_char then
+      hl_group = HL_CORRECT
+    else
+      hl_group = HL_ERROR
+      has_error = true
+    end
+
+    vim.api.nvim_buf_set_extmark(
+      buffer_id, EXTMARK_NS, buffer_line_idx, i - 1,
+      { end_col = i, hl_group = hl_group }
+    )
+  end
+
+  -- Add virtual text for remaining characters
+  local remaining_text = string.sub(target_text_for_line, typed_len + 1)
+  if #remaining_text > 0 then
+    vim.api.nvim_buf_set_extmark(
+      buffer_id, EXTMARK_NS, buffer_line_idx, typed_len,
+      {
+        virt_text = {{remaining_text, HL_REMAINING}},
+        virt_text_pos = 'overlay',
+        hl_mode = 'combine'
+      }
+    )
+  end
+
+  -- Update completion status and typed length for this line
+  if typed_len >= target_len and not has_error then
+    completed_lines[snippet_line_idx] = true
+  else
+    completed_lines[snippet_line_idx] = false
+  end
+  typed_lengths[snippet_line_idx] = typed_len
+
+  return has_error
+end
+
 --- Handles input and provides real-time highlighting using Extmarks.
 function M.check_input()
   -- Ensure we have a valid namespace and buffer, and game is active
@@ -45,105 +109,16 @@ function M.check_input()
   end
 
   local snippet_line_idx = cursor_line - 2 -- 1-based snippet index
-  local target_text_for_line = target_lines[snippet_line_idx]
-  local target_len = #target_text_for_line
+  local current_buffer_line = cursor_line - 1 -- Buffer line index (0-based)
 
-  -- Buffer line index (0-based)
-  local current_buffer_line = cursor_line - 1
+  -- Update display for current line
+  local has_error = update_line_display(snippet_line_idx, current_buffer_line, true)
 
-  -- Get user input from the line user is actually on
-  local typed_lines = vim.api.nvim_buf_get_lines(buffer_id, current_buffer_line, current_buffer_line + 1, false)
-  local current_line_content = typed_lines[1] or ""
-
-  -- The cursor column tells us how many characters have been typed
-  local typed_len = math.min(cursor_col, target_len)
-  local typed_text = string.sub(current_line_content, 1, typed_len)
-
-  -- Calculate remaining text that hasn't been typed yet
-  local remaining_text = string.sub(target_text_for_line, typed_len + 1)
-  local new_line_content = typed_text .. remaining_text
-
-  -- Update buffer with typed characters + remaining target text
-  vim.api.nvim_buf_set_lines(buffer_id, current_buffer_line, current_buffer_line + 1, false, { new_line_content })
-
-  -- Keep cursor on the line user is typing on
-  vim.api.nvim_win_set_cursor(window_id, {cursor_line, typed_len})
-
-  -- Clear highlights on current line
-  vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, current_buffer_line, current_buffer_line + 1)
-
-  -- Apply highlights to line being typed
-  local has_error = false
-  for i = 1, target_len do
-    local target_char = string.sub(target_text_for_line, i, i)
-
-    -- Determine highlight group based on typing progress and correctness
-    local hl_group
-    if i <= typed_len then
-      -- Character has been typed - check if it's correct
-      local typed_char = string.sub(typed_text, i, i)
-      if target_char == typed_char then
-        hl_group = HL_CORRECT
-      else
-        hl_group = HL_ERROR
-        has_error = true
-      end
-    else
-      -- This is the text remaining to be typed
-      hl_group = HL_REMAINING
-    end
-
-    -- Apply the Extmark to the current line
-    vim.api.nvim_buf_set_extmark(
-      buffer_id, EXTMARK_NS, current_buffer_line, i - 1,
-      { end_col = i, hl_group = hl_group }
-    )
-  end
-
-  -- Update completion status and typed length for this line
-  if typed_len >= target_len and not has_error then
-    completed_lines[snippet_line_idx] = true
-  else
-    completed_lines[snippet_line_idx] = false
-  end
-  typed_lengths[snippet_line_idx] = typed_len
-
-  -- Highlight all other lines based on their typed content
+  -- Update all other lines
   for idx = 1, #target_lines do
     if idx ~= snippet_line_idx then
       local line_buffer_idx = 1 + idx -- 0-indexed
-      local line_text = target_lines[idx]
-      local line_typed_len = typed_lengths[idx] or 0
-
-      -- Read buffer content for this line to check for errors
-      local buffer_lines = vim.api.nvim_buf_get_lines(buffer_id, line_buffer_idx, line_buffer_idx + 1, false)
-      local buffer_content = buffer_lines[1] or ""
-
-      vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, line_buffer_idx, line_buffer_idx + 1)
-
-      -- Highlight each character based on what was typed
-      for i = 1, #line_text do
-        local target_char = string.sub(line_text, i, i)
-
-        local hl_group
-        if i <= line_typed_len then
-          -- This character was typed - check if it's correct
-          local typed_char = string.sub(buffer_content, i, i)
-          if target_char == typed_char then
-            hl_group = HL_CORRECT
-          else
-            hl_group = HL_ERROR
-          end
-        else
-          -- Not typed yet
-          hl_group = HL_REMAINING
-        end
-
-        vim.api.nvim_buf_set_extmark(
-          buffer_id, EXTMARK_NS, line_buffer_idx, i - 1,
-          { end_col = i, hl_group = hl_group }
-        )
-      end
+      update_line_display(idx, line_buffer_idx, false)
     end
   end
 
@@ -222,15 +197,15 @@ window_id = vim.api.nvim_get_current_win()
 vim.api.nvim_win_set_buf(window_id, buffer_id)
 
 -- 4. Initial content setup:
--- Create buffer content with all snippet lines
+-- Create buffer content with status, separator, and empty lines for typing
 local buffer_content = {
   "Code Typer - Line Progress: 0% | Errors: No", -- Line 0: Status Line
   "--------------------------------------------------------------------------------", -- Line 1: Separator
 }
 
--- Add all snippet lines to the buffer
-for _, line in ipairs(target_lines) do
-  table.insert(buffer_content, line)
+-- Add empty lines for each snippet line (virtual text will show target)
+for _ = 1, #target_lines do
+  table.insert(buffer_content, "")
 end
 
 vim.api.nvim_buf_set_lines(buffer_id, 0, -1, false, buffer_content)
@@ -239,19 +214,27 @@ vim.api.nvim_buf_set_lines(buffer_id, 0, -1, false, buffer_content)
 vim.api.nvim_buf_set_option(buffer_id, 'modifiable', true)
 vim.api.nvim_win_set_cursor(window_id, {3, 0}) -- Cursor on line 3 (first snippet line), column 0
 
--- 5. Set up Autocommand for continuous input checking
+-- 5. Set up Autocommands for continuous input checking
 vim.api.nvim_create_autocmd("TextChangedI", {
   group = AUGROUP,
   buffer = buffer_id,
   callback = M.check_input,
-  desc = "Real-time input checking for typing game",
+  desc = "Real-time input checking for typing game in insert mode",
 })
 
--- 6. Enable Vim Motions but prevent destructive actions on the game buffer
-local destructive_maps = { 'd', 'c', 'y', 'x', '>', '<' }
-for _, key in ipairs(destructive_maps) do
-  vim.api.nvim_buf_set_keymap(buffer_id, 'n', key, '<Nop>', { silent = true, noremap = true })
-end
+vim.api.nvim_create_autocmd("TextChanged", {
+  group = AUGROUP,
+  buffer = buffer_id,
+  callback = M.check_input,
+  desc = "Real-time input checking for typing game in normal mode",
+})
+
+vim.api.nvim_create_autocmd({"CursorMovedI", "CursorMoved"}, {
+  group = AUGROUP,
+  buffer = buffer_id,
+  callback = M.check_input,
+  desc = "Update display when cursor moves between lines",
+})
 
 -- Map  <C-c> to close
 local close_cmd = ':lua require("your_plugin.core").close()<CR>'
