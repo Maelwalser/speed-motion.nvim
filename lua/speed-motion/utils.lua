@@ -1,5 +1,8 @@
 local M = {}
 
+-- Seed the random number generator for non-deterministic snippet selection
+math.randomseed(os.time())
+
 -- Store all loaded snippets here
 local ALL_SNIPPETS = {}
 
