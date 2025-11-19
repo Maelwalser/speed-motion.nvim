@@ -297,6 +297,9 @@ vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'O', '<Nop>', { noremap = true, sile
 vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<CR>', '<Esc>:lua require("speed-motion.core").move_to_next_line()<CR>a', { noremap = true, silent = true })
 vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<S-CR>', '<Nop>', { noremap = true, silent = true })
 
+-- Map Tab to insert two spaces instead of a tab character
+vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<Tab>', '<Space><Space>', { noremap = true, silent = true })
+
 -- Map  <C-c> to close
 local close_cmd = ':lua require("speed-motion.core").close()<CR>'
 vim.api.nvim_buf_set_keymap(buffer_id, 'n', '<C-c>', close_cmd, { noremap = true, silent = true })
