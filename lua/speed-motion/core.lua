@@ -150,6 +150,37 @@ function M.check_input()
   })
 end
 
+--- Handles Enter key press to move to the next line
+function M.move_to_next_line()
+  if not buffer_id or not window_id or game_status == "FINISHED" then return end
+
+  -- Get current cursor position
+  local cursor_pos = vim.api.nvim_win_get_cursor(window_id)
+  local cursor_line = cursor_pos[1] -- 1-indexed line number
+
+  -- Calculate which snippet line we're on
+  if cursor_line < 3 then
+    -- On status or separator, move to first snippet line
+    vim.api.nvim_win_set_cursor(window_id, {3, 0})
+    return
+  end
+
+  local snippet_line_idx = cursor_line - 2
+
+  -- Check if there's a next line
+  if snippet_line_idx < #target_lines then
+    local next_line = cursor_line + 1
+    local next_snippet_idx = snippet_line_idx + 1
+
+    -- Move cursor to the next line at the position of typed characters
+    local next_typed_len = typed_lengths[next_snippet_idx] or 0
+    vim.api.nvim_win_set_cursor(window_id, {next_line, next_typed_len})
+  else
+    -- Already on last line, wrap to first line
+    vim.api.nvim_win_set_cursor(window_id, {3, typed_lengths[1] or 0})
+  end
+end
+
 --- Shows the language selection menu, then starts the game
 function M.start()
   menu.show(function(language_id)
@@ -262,8 +293,8 @@ vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'gJ', '<Nop>', { noremap = true, sil
 vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'o', '<Nop>', { noremap = true, silent = true })  -- open line below
 vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'O', '<Nop>', { noremap = true, silent = true })  -- open line above
 
--- Prevent inserting newlines in insert mode
-vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<CR>', '<Nop>', { noremap = true, silent = true })
+-- Map Enter to move to next line instead of inserting newline
+vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<CR>', '<Esc>:lua require("speed-motion.core").move_to_next_line()<CR>a', { noremap = true, silent = true })
 vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<S-CR>', '<Nop>', { noremap = true, silent = true })
 
 -- Map  <C-c> to close
