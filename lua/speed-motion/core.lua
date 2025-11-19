@@ -1,5 +1,6 @@
 local M = {}
-local utils = require('speed-motion.utils') -- Import the utility module
+local utils = require('speed-motion.utils')
+local menu = require('speed-motion.menu')
 
 -- State variables for the plugin
 local window_id = nil
@@ -149,8 +150,16 @@ function M.check_input()
   })
 end
 
+--- Shows the language selection menu, then starts the game
+function M.start()
+  menu.show(function(language_id)
+    M.open(language_id)
+  end)
+end
+
 --- Creates the full-screen, exclusive window and its associated buffer.
-function M.open()
+--- @param language_id string The language identifier (e.g., "golang", "java", "rust")
+function M.open(language_id)
 -- Check if the game is already open in a valid window.
 if window_id and vim.api.nvim_win_is_valid(window_id) then
  vim.api.nvim_set_current_win(window_id)
@@ -159,8 +168,8 @@ end
 
 EXTMARK_NS = vim.api.nvim_create_namespace('CodeTyperExtmarks')
 
--- 1. Select the random text and update state
-target_lines = utils.get_random_target_text()
+-- 1. Select the random snippet for the chosen language and update state
+target_lines = utils.get_random_snippet(language_id)
 current_line_idx = 1
 target_text = target_lines[1] -- Initialize with the first line
 game_status = "PLAYING"
@@ -258,7 +267,7 @@ vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<CR>', '<Nop>', { noremap = true, s
 vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<S-CR>', '<Nop>', { noremap = true, silent = true })
 
 -- Map  <C-c> to close
-local close_cmd = ':lua require("your_plugin.core").close()<CR>'
+local close_cmd = ':lua require("speed-motion.core").close()<CR>'
 vim.api.nvim_buf_set_keymap(buffer_id, 'n', '<C-c>', close_cmd, { noremap = true, silent = true })
 
 vim.api.nvim_set_current_win(window_id)
