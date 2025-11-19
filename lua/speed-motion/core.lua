@@ -236,6 +236,27 @@ vim.api.nvim_create_autocmd({"CursorMovedI", "CursorMoved"}, {
   desc = "Update display when cursor moves between lines",
 })
 
+-- 6. Custom mappings to handle line operations without deleting buffer lines
+-- dd - clear line content (don't delete the line itself)
+vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'dd', '0D', { noremap = true, silent = true })
+
+-- cc - clear line and enter insert mode
+vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'cc', '0C', { noremap = true, silent = true })
+
+-- S - same as cc (substitute line)
+vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'S', '0C', { noremap = true, silent = true })
+
+-- Disable operations that would delete lines from buffer
+-- These would break the buffer structure where each line = one snippet line
+vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'J', '<Nop>', { noremap = true, silent = true })  -- join lines
+vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'gJ', '<Nop>', { noremap = true, silent = true }) -- join lines without space
+vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'o', '<Nop>', { noremap = true, silent = true })  -- open line below
+vim.api.nvim_buf_set_keymap(buffer_id, 'n', 'O', '<Nop>', { noremap = true, silent = true })  -- open line above
+
+-- Prevent inserting newlines in insert mode
+vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<CR>', '<Nop>', { noremap = true, silent = true })
+vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<S-CR>', '<Nop>', { noremap = true, silent = true })
+
 -- Map  <C-c> to close
 local close_cmd = ':lua require("your_plugin.core").close()<CR>'
 vim.api.nvim_buf_set_keymap(buffer_id, 'n', '<C-c>', close_cmd, { noremap = true, silent = true })
