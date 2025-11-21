@@ -91,10 +91,34 @@ local function update_line_display(snippet_line_idx, buffer_line_idx, is_current
   return has_error
 end
 
+--- Protects status and separator lines from being edited
+local function protect_ui_lines()
+  if not buffer_id or not window_id or not vim.api.nvim_buf_is_valid(buffer_id) then
+    return
+  end
+
+  -- Get current cursor position
+  local cursor_pos = vim.api.nvim_win_get_cursor(window_id)
+  local cursor_line = cursor_pos[1] -- 1-indexed line number
+
+  -- If cursor is on status (line 1) or separator (line 2), move to first snippet line
+  if cursor_line < 3 then
+    vim.api.nvim_win_set_cursor(window_id, {3, typed_lengths[1] or 0})
+    return true
+  end
+
+  return false
+end
+
 --- Handles input and provides real-time highlighting using Extmarks.
 function M.check_input()
   -- Ensure we have a valid namespace and buffer, and game is active
   if not buffer_id or game_status == "FINISHED" or not EXTMARK_NS then return end
+
+  -- Protect UI lines from editing
+  if protect_ui_lines() then
+    return
+  end
 
   -- Get current cursor position to detect which line user is actually on
   local cursor_pos = vim.api.nvim_win_get_cursor(window_id)
@@ -239,7 +263,7 @@ vim.api.nvim_win_set_buf(window_id, buffer_id)
 -- 4. Initial content setup:
 -- Create buffer content with status, separator, and empty lines for typing
 local buffer_content = {
-  "Code Typer - Line Progress: 0% | Errors: No", -- Line 0: Status Line
+  "Line Progress: 0% | Errors: No", -- Line 0: Status Line
   "--------------------------------------------------------------------------------", -- Line 1: Separator
 }
 
@@ -258,14 +282,35 @@ vim.api.nvim_win_set_cursor(window_id, {3, 0}) -- Cursor on line 3 (first snippe
 vim.api.nvim_create_autocmd("TextChangedI", {
   group = AUGROUP,
   buffer = buffer_id,
-  callback = M.check_input,
+  callback = function()
+    -- Revert any changes to status or separator lines
+    local status_line = vim.api.nvim_buf_get_lines(buffer_id, 0, 1, false)[1]
+    if not status_line or not string.match(status_line, "^Code Typer") and not string.match(status_line, "^Line Progress") then
+      vim.api.nvim_buf_set_lines(buffer_id, 0, 1, false, {"Line Progress: 0% | Errors: No"})
+    end
+
+    local separator_line = vim.api.nvim_buf_get_lines(buffer_id, 1, 2, false)[1]
+    if separator_line ~= "--------------------------------------------------------------------------------" then
+      vim.api.nvim_buf_set_lines(buffer_id, 1, 2, false, {"--------------------------------------------------------------------------------"})
+    end
+
+    M.check_input()
+  end,
   desc = "Real-time input checking for typing game in insert mode",
 })
 
 vim.api.nvim_create_autocmd("TextChanged", {
   group = AUGROUP,
   buffer = buffer_id,
-  callback = M.check_input,
+  callback = function()
+    -- Revert any changes to status or separator lines
+    local separator_line = vim.api.nvim_buf_get_lines(buffer_id, 1, 2, false)[1]
+    if separator_line ~= "--------------------------------------------------------------------------------" then
+      vim.api.nvim_buf_set_lines(buffer_id, 1, 2, false, {"--------------------------------------------------------------------------------"})
+    end
+
+    M.check_input()
+  end,
   desc = "Real-time input checking for typing game in normal mode",
 })
 
