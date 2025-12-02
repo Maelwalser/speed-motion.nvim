@@ -1,15 +1,23 @@
+local main_menu = require('speed-motion.main_menu')
 local core = require('speed-motion.core')
+local normal_mode = require('speed-motion.normal_mode')
 
--- Command to open the language selection menu and start the game
+-- Command to open the main menu
 vim.api.nvim_create_user_command(
     'SpeedMotion',
-        core.start,
-    { nargs = 0, desc = 'Open language selection and start typing game' }
+    function()
+        main_menu.show()
+    end,
+    { nargs = 0, desc = 'Open Speed Motion main menu' }
 )
 
--- command to close the window
+-- Command to close any active game window
 vim.api.nvim_create_user_command(
     'SlowMotion',
-        core.close,
-    { nargs = 0, desc = 'Close the main plugin window' }
+    function()
+        -- Try to close both modes
+        core.close()
+        normal_mode.close()
+    end,
+    { nargs = 0, desc = 'Close any active Speed Motion window' }
 )
