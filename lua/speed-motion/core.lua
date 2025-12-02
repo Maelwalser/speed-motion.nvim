@@ -14,6 +14,9 @@ local typed_lengths = {}      -- Track how many characters typed on each line: {
 
 local game_status = "READY" -- READY, PLAYING, FINISHED
 local EXTMARK_NS = nil -- Extmark Namespace ID
+local start_time = nil -- Track when the game started
+local end_time = nil -- Track when the game ended
+local status_timer = nil -- Timer for updating status bar
 
 local HL_CORRECT = 'TypingCorrect' -- Green
 local HL_ERROR = 'TypingError'-- Red
@@ -91,6 +94,50 @@ local function update_line_display(snippet_line_idx, buffer_line_idx, is_current
   return has_error
 end
 
+--- Formats elapsed time in MM:SS.d format
+local function format_time(seconds)
+  local mins = math.floor(seconds / 60)
+  local secs = seconds % 60
+  return string.format("%02d:%04.1f", mins, secs)
+end
+
+--- Updates the status bar with current time and error state
+local function update_status_bar()
+  if not buffer_id or not vim.api.nvim_buf_is_valid(buffer_id) or game_status ~= "PLAYING" then
+    return
+  end
+
+  local elapsed = (vim.loop.hrtime() - start_time) / 1e9
+  local time_str = format_time(elapsed)
+
+  -- Check for errors by examining the current line
+  local cursor_pos = vim.api.nvim_win_get_cursor(window_id)
+  local cursor_line = cursor_pos[1]
+  local has_error = false
+
+  if cursor_line >= 3 and cursor_line - 2 <= #target_lines then
+    local snippet_line_idx = cursor_line - 2
+    local buffer_line_idx = cursor_line - 1
+    local target_text_for_line = target_lines[snippet_line_idx]
+
+    local buffer_lines = vim.api.nvim_buf_get_lines(buffer_id, buffer_line_idx, buffer_line_idx + 1, false)
+    local typed_text = buffer_lines[1] or ""
+
+    for i = 1, #typed_text do
+      local target_char = string.sub(target_text_for_line, i, i)
+      local typed_char = string.sub(typed_text, i, i)
+      if target_char ~= typed_char then
+        has_error = true
+        break
+      end
+    end
+  end
+
+  vim.api.nvim_buf_set_lines(buffer_id, 0, 1, false, {
+    "Code Typer - Time: " .. time_str .. " | Errors: " .. (has_error and "Yes" or "No")
+  })
+end
+
 --- Protects status and separator lines from being edited
 local function protect_ui_lines()
   if not buffer_id or not window_id or not vim.api.nvim_buf_is_valid(buffer_id) then
@@ -161,17 +208,56 @@ function M.check_input()
   -- Finish game if all lines complete
   if all_complete and game_status ~= "FINISHED" then
     game_status = "FINISHED"
-    vim.api.nvim_echo({{"Game Complete! Press q to close.", "Title"}}, true, {})
-    vim.api.nvim_del_augroup_by_name("CodeTyperGame")
-    vim.api.nvim_buf_set_option(buffer_id, 'modifiable', false)
+    end_time = vim.loop.hrtime()
+
+    -- Stop the status timer
+    if status_timer then
+      status_timer:stop()
+      status_timer:close()
+      status_timer = nil
+    end
+
+    -- Show completion screen
+    M.show_completion_screen()
   end
+end
 
-  -- Update Status Line
-  local progress = math.floor((num_completed / #target_lines) * 100)
+--- Shows the game completion screen
+function M.show_completion_screen()
+  if not buffer_id or not vim.api.nvim_buf_is_valid(buffer_id) then return end
 
-  vim.api.nvim_buf_set_lines(buffer_id, 0, 1, false, {
-    "Code Typer - Line Progress: " .. progress .. "% | Errors: " .. (has_error and "Yes" or "No")
-  })
+  -- Calculate final time
+  local total_time = (end_time - start_time) / 1e9
+  local time_str = format_time(total_time)
+
+  -- Make buffer modifiable temporarily to update content
+  vim.api.nvim_buf_set_option(buffer_id, 'modifiable', true)
+
+  -- Clear the buffer and display completion screen
+  local completion_screen = {
+    "",
+    "╔════════════════════════════════════════════════════════════════════════════╗",
+    "║                                                                            ║",
+    "║                         🎉 GAME COMPLETE! 🎉                              ║",
+    "║                                                                            ║",
+    "╠════════════════════════════════════════════════════════════════════════════╣",
+    "║                                                                            ║",
+    "║                              Time: " .. string.format("%-10s", time_str) .. "                             ║",
+    "║                                                                            ║",
+    "╚════════════════════════════════════════════════════════════════════════════╝",
+    "",
+  }
+
+  vim.api.nvim_buf_set_lines(buffer_id, 0, -1, false, completion_screen)
+
+  -- Make buffer read-only
+  vim.api.nvim_buf_set_option(buffer_id, 'modifiable', false)
+
+  -- Remove all autocmds to prevent further input processing
+  pcall(vim.api.nvim_del_augroup_by_name, "CodeTyperGame")
+
+  -- Ensure we're in normal mode
+  vim.cmd('stopinsert')
 end
 
 --- Handles Enter key press to move to the next line
@@ -228,6 +314,8 @@ target_lines = utils.get_random_snippet(language_id)
 current_line_idx = 1
 target_text = target_lines[1] -- Initialize with the first line
 game_status = "PLAYING"
+start_time = vim.loop.hrtime() -- Start the timer
+end_time = nil
 
 -- Initialize completion tracking and typed lengths for all lines
 completed_lines = {}
@@ -263,7 +351,7 @@ vim.api.nvim_win_set_buf(window_id, buffer_id)
 -- 4. Initial content setup:
 -- Create buffer content with status, separator, and empty lines for typing
 local buffer_content = {
-  "Line Progress: 0% | Errors: No", -- Line 0: Status Line
+  "Code Typer - Time: 00:00.0 | Errors: No", -- Line 0: Status Line
   "--------------------------------------------------------------------------------", -- Line 1: Separator
 }
 
@@ -285,8 +373,8 @@ vim.api.nvim_create_autocmd("TextChangedI", {
   callback = function()
     -- Revert any changes to status or separator lines
     local status_line = vim.api.nvim_buf_get_lines(buffer_id, 0, 1, false)[1]
-    if not status_line or not string.match(status_line, "^Code Typer") and not string.match(status_line, "^Line Progress") then
-      vim.api.nvim_buf_set_lines(buffer_id, 0, 1, false, {"Line Progress: 0% | Errors: No"})
+    if not status_line or not string.match(status_line, "^Code Typer") then
+      vim.api.nvim_buf_set_lines(buffer_id, 0, 1, false, {"Code Typer - Time: 00:00.0 | Errors: No"})
     end
 
     local separator_line = vim.api.nvim_buf_get_lines(buffer_id, 1, 2, false)[1]
@@ -351,6 +439,12 @@ vim.api.nvim_buf_set_keymap(buffer_id, 'n', '<C-c>', close_cmd, { noremap = true
 
 vim.api.nvim_set_current_win(window_id)
 
+-- Start the status bar update timer (updates every 100ms)
+status_timer = vim.loop.new_timer()
+status_timer:start(0, 100, vim.schedule_wrap(function()
+  update_status_bar()
+end))
+
 -- Call check_input once to set initial highlights
 M.check_input()
 end
@@ -361,7 +455,14 @@ if window_id and vim.api.nvim_win_is_valid(window_id) then
  vim.api.nvim_win_close(window_id, true)
 
  -- Clean up the Autocmd group when closing the window
- vim.api.nvim_del_augroup_by_name("CodeTyperGame")
+ pcall(vim.api.nvim_del_augroup_by_name, "CodeTyperGame")
+
+ -- Stop and clean up the timer
+ if status_timer then
+   status_timer:stop()
+   status_timer:close()
+   status_timer = nil
+ end
 
  window_id = nil
  buffer_id = nil
@@ -371,6 +472,9 @@ if window_id and vim.api.nvim_win_is_valid(window_id) then
  target_text = ""
  completed_lines = {}
  typed_lengths = {}
+ start_time = nil
+ end_time = nil
+ game_status = "READY"
 end
 end
 
