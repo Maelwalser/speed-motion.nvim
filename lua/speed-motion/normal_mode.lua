@@ -4,7 +4,10 @@ local words = require('speed-motion.words')
 -- State variables
 local window_id = nil
 local buffer_id = nil
-local target_text = ""
+local target_lines = {}  -- Multiple lines of text
+local current_line_idx = 1
+local typed_lengths = {}  -- Track how many chars typed on each line
+local completed_lines = {}  -- Track which lines are complete
 local game_status = "READY" -- READY, PLAYING, FINISHED
 local EXTMARK_NS = nil
 local start_time = nil
@@ -12,6 +15,7 @@ local end_time = nil
 local status_timer = nil
 local countdown_timer = nil
 local time_remaining = 30 -- 30 seconds
+local total_words_in_target = 0  -- Track total words generated
 
 local HL_CORRECT = 'TypingCorrect'
 local HL_ERROR = 'TypingError'
@@ -27,6 +31,43 @@ local function format_time(seconds)
   return string.format("%02d:%02d", mins, secs)
 end
 
+--- Splits word sequence into lines based on width
+--- @param text string The full text to split
+--- @param width number Maximum width per line
+--- @return table Array of line strings
+local function split_into_lines(text, width)
+  local lines = {}
+  local current_line = ""
+  local text_words = vim.split(text, " ", { plain = true, trimempty = true })
+
+  for _, word in ipairs(text_words) do
+    -- Check if adding this word would exceed the width
+    local test_line = current_line
+    if #current_line > 0 then
+      test_line = current_line .. " " .. word
+    else
+      test_line = word
+    end
+
+    if #test_line <= width then
+      current_line = test_line
+    else
+      -- Current line is full, save it and start new line
+      if #current_line > 0 then
+        table.insert(lines, current_line)
+      end
+      current_line = word
+    end
+  end
+
+  -- Add the last line if not empty
+  if #current_line > 0 then
+    table.insert(lines, current_line)
+  end
+
+  return lines
+end
+
 --- Updates the status bar with countdown timer
 local function update_status_bar()
   if not buffer_id or not vim.api.nvim_buf_is_valid(buffer_id) or game_status ~= "PLAYING" then
@@ -40,25 +81,30 @@ local function update_status_bar()
   })
 end
 
---- Updates highlights for the typed text
-local function update_display()
-  if not buffer_id or game_status == "FINISHED" or not EXTMARK_NS then
-    return
-  end
+--- Updates highlights for a specific line
+local function update_line_display(line_idx, buffer_line_idx)
+  local target_text_for_line = target_lines[line_idx]
+  local target_len = #target_text_for_line
 
-  -- Get what user has typed
-  local buffer_lines = vim.api.nvim_buf_get_lines(buffer_id, 2, 3, false)
+  -- Get what user has typed from buffer
+  local buffer_lines = vim.api.nvim_buf_get_lines(buffer_id, buffer_line_idx, buffer_line_idx + 1, false)
   local typed_text = buffer_lines[1] or ""
   local typed_len = #typed_text
-  local target_len = #target_text
 
-  -- Clear all extmarks on the typing line
-  vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, 2, 3)
+  -- Limit typed length to target length
+  if typed_len > target_len then
+    typed_text = string.sub(typed_text, 1, target_len)
+    typed_len = target_len
+    vim.api.nvim_buf_set_lines(buffer_id, buffer_line_idx, buffer_line_idx + 1, false, { typed_text })
+  end
+
+  -- Clear all extmarks on this line
+  vim.api.nvim_buf_clear_namespace(buffer_id, EXTMARK_NS, buffer_line_idx, buffer_line_idx + 1)
 
   -- Apply character-by-character highlights
   local has_error = false
-  for i = 1, math.min(typed_len, target_len) do
-    local target_char = string.sub(target_text, i, i)
+  for i = 1, typed_len do
+    local target_char = string.sub(target_text_for_line, i, i)
     local typed_char = string.sub(typed_text, i, i)
 
     local hl_group
@@ -70,22 +116,93 @@ local function update_display()
     end
 
     vim.api.nvim_buf_set_extmark(
-      buffer_id, EXTMARK_NS, 2, i - 1,
+      buffer_id, EXTMARK_NS, buffer_line_idx, i - 1,
       { end_col = i, hl_group = hl_group }
     )
   end
 
   -- Add virtual text for remaining characters
-  local remaining_text = string.sub(target_text, typed_len + 1)
+  local remaining_text = string.sub(target_text_for_line, typed_len + 1)
   if #remaining_text > 0 then
     vim.api.nvim_buf_set_extmark(
-      buffer_id, EXTMARK_NS, 2, typed_len,
+      buffer_id, EXTMARK_NS, buffer_line_idx, typed_len,
       {
         virt_text = {{remaining_text, HL_REMAINING}},
         virt_text_pos = 'overlay',
         hl_mode = 'combine'
       }
     )
+  end
+
+  -- Update completion status and typed length for this line
+  if typed_len >= target_len and not has_error then
+    completed_lines[line_idx] = true
+    -- Auto-advance to next line when current line is complete
+    if line_idx < #target_lines then
+      vim.schedule(function()
+        M.move_to_next_line()
+      end)
+    end
+  else
+    completed_lines[line_idx] = false
+  end
+  typed_lengths[line_idx] = typed_len
+end
+
+--- Updates all line displays
+local function update_display()
+  if not buffer_id or game_status == "FINISHED" or not EXTMARK_NS then
+    return
+  end
+
+  -- Get current cursor position
+  local cursor_pos = vim.api.nvim_win_get_cursor(window_id)
+  local cursor_line = cursor_pos[1]
+
+  -- Calculate which line we're on (line 3 = index 1, line 4 = index 2, etc.)
+  if cursor_line < 3 then
+    return
+  end
+
+  local line_idx = cursor_line - 2
+  if line_idx > #target_lines then
+    return
+  end
+
+  -- Update current line
+  local buffer_line_idx = cursor_line - 1
+  update_line_display(line_idx, buffer_line_idx)
+
+  -- Update all other lines
+  for idx = 1, #target_lines do
+    if idx ~= line_idx then
+      local buf_line_idx = 1 + idx
+      update_line_display(idx, buf_line_idx)
+    end
+  end
+end
+
+--- Moves to the next line
+function M.move_to_next_line()
+  if not buffer_id or not window_id or game_status == "FINISHED" then
+    return
+  end
+
+  local cursor_pos = vim.api.nvim_win_get_cursor(window_id)
+  local cursor_line = cursor_pos[1]
+
+  if cursor_line < 3 then
+    vim.api.nvim_win_set_cursor(window_id, {3, 0})
+    return
+  end
+
+  local line_idx = cursor_line - 2
+
+  if line_idx < #target_lines then
+    local next_line = cursor_line + 1
+    local next_line_idx = line_idx + 1
+    local next_typed_len = typed_lengths[next_line_idx] or 0
+    vim.api.nvim_win_set_cursor(window_id, {next_line, next_typed_len})
   end
 end
 
@@ -125,13 +242,21 @@ function M.finish_game()
     countdown_timer = nil
   end
 
-  -- Get typed text
-  local buffer_lines = vim.api.nvim_buf_get_lines(buffer_id, 2, 3, false)
-  local typed_text = buffer_lines[1] or ""
+  -- Collect all typed text from all lines
+  local all_typed = {}
+  for i = 1, #target_lines do
+    local buffer_line_idx = 1 + i
+    local buffer_lines = vim.api.nvim_buf_get_lines(buffer_id, buffer_line_idx, buffer_line_idx + 1, false)
+    local typed_line = buffer_lines[1] or ""
+    table.insert(all_typed, typed_line)
+  end
+
+  local typed_text = table.concat(all_typed, " ")
+  local target_text = table.concat(target_lines, " ")
 
   -- Calculate statistics
   local correct_words = words.count_correct_words(typed_text, target_text)
-  local total_time = 30 -- Always 30 seconds for normal mode
+  local total_time = 30
   local wpm = words.calculate_wpm(correct_words, total_time)
 
   -- Show completion screen
@@ -183,12 +308,9 @@ function M.open()
 
   EXTMARK_NS = vim.api.nvim_create_namespace('NormalModeExtmarks')
 
-  -- Generate random word sequence (about 100 words - more than can be typed in 30s)
-  target_text = words.generate_word_sequence(100)
-  game_status = "PLAYING"
-  start_time = vim.loop.hrtime()
-  end_time = nil
-  time_remaining = 30
+  -- Generate random word sequence
+  local word_sequence = words.generate_word_sequence(200)
+  total_words_in_target = 200
 
   -- Create scratch buffer
   buffer_id = vim.api.nvim_create_buf(false, true)
@@ -198,8 +320,7 @@ function M.open()
   vim.api.nvim_buf_set_option(buffer_id, 'bufhidden', 'wipe')
   vim.api.nvim_buf_set_option(buffer_id, 'swapfile', false)
   vim.api.nvim_buf_set_option(buffer_id, 'filetype', 'typing_game')
-  vim.api.nvim_buf_set_option(buffer_id, 'wrap', true)
-  vim.api.nvim_buf_set_option(buffer_id, 'linebreak', true)
+  vim.api.nvim_buf_set_option(buffer_id, 'wrap', false)
 
   -- Open full-screen window
   vim.cmd('enew')
@@ -208,12 +329,35 @@ function M.open()
   window_id = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(window_id, buffer_id)
 
+  -- Get window width and split text into lines
+  local win_width = vim.api.nvim_win_get_width(window_id)
+  local usable_width = win_width - 4  -- Account for padding
+  target_lines = split_into_lines(word_sequence, usable_width)
+
+  -- Initialize state
+  game_status = "PLAYING"
+  start_time = vim.loop.hrtime()
+  end_time = nil
+  time_remaining = 30
+  current_line_idx = 1
+
+  completed_lines = {}
+  typed_lengths = {}
+  for i = 1, #target_lines do
+    completed_lines[i] = false
+    typed_lengths[i] = 0
+  end
+
   -- Initial buffer content
   local buffer_content = {
     "Normal Mode - Time Remaining: 00:30",
     "────────────────────────────────────────────────────────────────────────────────",
-    "",
   }
+
+  -- Add empty lines for each target line
+  for _ = 1, #target_lines do
+    table.insert(buffer_content, "")
+  end
 
   vim.api.nvim_buf_set_lines(buffer_id, 0, -1, false, buffer_content)
   vim.api.nvim_buf_set_option(buffer_id, 'modifiable', true)
@@ -240,6 +384,16 @@ function M.open()
     desc = "Real-time input checking for typing game",
   })
 
+  vim.api.nvim_create_autocmd({"CursorMovedI", "CursorMoved"}, {
+    group = AUGROUP,
+    buffer = buffer_id,
+    callback = update_display,
+    desc = "Update display when cursor moves",
+  })
+
+  -- Map Enter to move to next line
+  vim.api.nvim_buf_set_keymap(buffer_id, 'i', '<CR>', '<Esc>:lua require("speed-motion.normal_mode").move_to_next_line()<CR>a', { noremap = true, silent = true })
+
   -- Map <C-c> to close
   vim.api.nvim_buf_set_keymap(buffer_id, 'n', '<C-c>', ':lua require("speed-motion.normal_mode").close()<CR>', { noremap = true, silent = true })
 
@@ -249,7 +403,7 @@ function M.open()
     countdown_tick()
   end))
 
-  -- Start status bar update timer (updates every 100ms for smooth display)
+  -- Start status bar update timer
   status_timer = vim.loop.new_timer()
   status_timer:start(0, 100, vim.schedule_wrap(function()
     update_status_bar()
@@ -287,11 +441,15 @@ function M.close()
     window_id = nil
     buffer_id = nil
     EXTMARK_NS = nil
-    target_text = ""
+    target_lines = {}
+    current_line_idx = 1
+    typed_lengths = {}
+    completed_lines = {}
     game_status = "READY"
     start_time = nil
     end_time = nil
     time_remaining = 30
+    total_words_in_target = 0
   end
 end
 
