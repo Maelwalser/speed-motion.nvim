@@ -82,7 +82,7 @@ local function update_status_bar()
 end
 
 --- Updates highlights for a specific line
-local function update_line_display(line_idx, buffer_line_idx)
+local function update_line_display(line_idx, buffer_line_idx, is_current_line)
   local target_text_for_line = target_lines[line_idx]
   local target_len = #target_text_for_line
 
@@ -135,10 +135,11 @@ local function update_line_display(line_idx, buffer_line_idx)
   end
 
   -- Update completion status and typed length for this line
+  local was_complete = completed_lines[line_idx]
   if typed_len >= target_len and not has_error then
     completed_lines[line_idx] = true
-    -- Auto-advance to next line when current line is complete
-    if line_idx < #target_lines then
+    -- Auto-advance to next line when current line is complete (only for the line being actively typed)
+    if is_current_line and not was_complete and line_idx < #target_lines then
       vim.schedule(function()
         M.move_to_next_line()
       end)
@@ -171,13 +172,13 @@ local function update_display()
 
   -- Update current line
   local buffer_line_idx = cursor_line - 1
-  update_line_display(line_idx, buffer_line_idx)
+  update_line_display(line_idx, buffer_line_idx, true)
 
   -- Update all other lines
   for idx = 1, #target_lines do
     if idx ~= line_idx then
       local buf_line_idx = 1 + idx
-      update_line_display(idx, buf_line_idx)
+      update_line_display(idx, buf_line_idx, false)
     end
   end
 end
